@@ -165,9 +165,12 @@ def main(args, ITE=0):
                     torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth.tar")
 
             # Training
-            loss = train(model, train_loader, optimizer, criterion)
-            all_loss[iter_] = loss
-            all_accuracy[iter_] = accuracy
+            if _ite==0:
+                loss = train(model, train_loader, optimizer, criterion)
+                #needed to be completed
+                #teacher_model = ...
+            else:
+                loss = train_with_distill(model, train_loader, optimizer, teacher_model)
             
             # Frequency for Printing Accuracy and Loss
             if iter_ % args.print_freq == 0:
@@ -247,6 +250,40 @@ def train(model, train_loader, optimizer, criterion):
                 p.grad.data = torch.from_numpy(grad_tensor).to(device)
         optimizer.step()
     return train_loss.item()
+    
+    
+
+def distillation_loss(y, labels, teacher_scores, T, alpha):
+    return nn.KLDivLoss()(F.log_softmax(y/T), F.softmax(teacher_scores/T)) * (T*T * 2.0 * alpha) + F.cross_entropy(y, labels) * (1. - alpha)
+
+
+
+
+def train_with_distill(model, train_loader, optimizer, teacher_model, Temperature=20.0, Alpha=0.7):
+
+    EPS = 1e-6
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    teacher_model.eval()
+    model.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = Variable(data), Variable(target)
+        optimizer.zero_grad()
+        output = model(data)
+        teacher_output = teacher_model(data)
+        teacher_output = teacher_output.detach()
+        # Alternative approach to load teacher_output:
+        # teacher_output = Variable(teacher_output.data, requires_grad=False) 
+        loss = distillation_loss(output, target, teacher_output, Temperature, Alpha)
+        loss.backward()
+        # Freezing Pruned weights by making their gradients Zero
+        for name, p in model.named_parameters():
+            if 'weight' in name:
+                tensor = p.data.cpu().numpy()
+                grad_tensor = p.grad.data.cpu().numpy()
+                grad_tensor = np.where(tensor < EPS, 0, grad_tensor)
+                p.grad.data = torch.from_numpy(grad_tensor)
+        optimizer.step()
+    return loss.item()
 
 # Function for Testing
 def test(model, test_loader, criterion):
